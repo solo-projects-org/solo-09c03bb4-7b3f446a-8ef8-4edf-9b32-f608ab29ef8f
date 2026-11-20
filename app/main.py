@@ -68,12 +68,36 @@ def _render_index(
     )
 
 
+def _summary_payload(detail: dict) -> list[dict]:
+    session = detail["session"]
+    return [
+        {
+            "join_minute": item.join_minute,
+            "board_minute": item.board_minute,
+            "count": item.count,
+            "wait_minutes": item.wait_minutes,
+            "overdue": item.is_overdue(session.threshold),
+            "archived": item.archived,
+        }
+        for item in detail["credential_summary"]
+    ]
+
+
+def _archive_payload(info: service.ArchiveInfo) -> dict:
+    return {
+        "archived": info.archived,
+        "archived_at": info.archived_at,
+        "credential_count": info.credential_count,
+        "passenger_count": info.passenger_count,
+    }
+
+
 def _session_payload(session_id: int) -> dict:
     detail = service.get_detail(_db(), session_id)
     session = detail["session"]
     result = detail["result"]
-    credentials = detail["credentials"]
-    return {
+    archive_info = detail["archive_info"]
+    payload = {
         "session": {
             "id": session.id,
             "filename": session.filename,
@@ -96,7 +120,16 @@ def _session_payload(session_id: int) -> dict:
             "version": result.version,
             "updated_at": result.updated_at,
         },
-        "credentials": [
+        "credential_summary": _summary_payload(detail),
+        "archive": _archive_payload(archive_info),
+        "credential_passengers": detail["credential_passengers"],
+        "overdue_credentials": detail["overdue_credentials"],
+        "minutes": detail["minutes"],
+        "explanation": service.describe_status(session, result),
+    }
+    if not archive_info.archived:
+        # 未归档时才给出逐张凭证（含凭证号）；归档后该字段由汇总替代。
+        payload["credentials"] = [
             {
                 "credential_no": c.credential_no,
                 "join_minute": c.join_minute,
@@ -105,13 +138,9 @@ def _session_payload(session_id: int) -> dict:
                 "wait_minutes": c.wait_minutes,
                 "overdue": c.is_overdue(session.threshold),
             }
-            for c in credentials
-        ],
-        "credential_passengers": detail["credential_passengers"],
-        "overdue_credentials": detail["overdue_credentials"],
-        "minutes": detail["minutes"],
-        "explanation": service.describe_status(session, result),
-    }
+            for c in detail["credentials"]
+        ]
+    return payload
 
 
 # ---------------------------------------------------------------- HTML 页面
@@ -183,6 +212,12 @@ def add_credential_form(
             f"/sessions/{session_id}", f"未保存新凭证：{exc}", "error"
         )
     if outcome.outcome == "duplicate":
+        if outcome.archived:
+            return _flash_redirect(
+                f"/sessions/{session_id}",
+                f"凭证 {outcome.credential.credential_no} 已在归档中处理过，"
+                "内容相同，不再重复核销，结论未变。",
+            )
         return _flash_redirect(
             f"/sessions/{session_id}",
             f"凭证 {outcome.credential.credential_no} 内容相同，只计一次，结论未变。",
@@ -190,6 +225,26 @@ def add_credential_form(
     return _flash_redirect(
         f"/sessions/{session_id}",
         f"凭证 {outcome.credential.credential_no} 已采信，结论已重算。",
+    )
+
+
+@app.post("/sessions/{session_id}/archive")
+def archive_session_form(session_id: int):
+    try:
+        outcome = service.archive_session(_db(), session_id)
+    except service.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except service.ArchiveIntegrityError as exc:
+        return _flash_redirect(f"/sessions/{session_id}", str(exc), "error")
+    if outcome.outcome == "already_archived":
+        return _flash_redirect(
+            f"/sessions/{session_id}", "该场次已经归档，无需重复操作。"
+        )
+    return _flash_redirect(
+        f"/sessions/{session_id}",
+        f"场次已归档：{outcome.archive.credential_count} 张凭证、"
+        f"{outcome.archive.passenger_count} 人转为核销依据汇总，明文凭证号已清除，"
+        "结论未变。",
     )
 
 
@@ -278,3 +333,19 @@ def api_add_credential(session_id: int, payload: CredentialIn):
     }
     body.update(_session_payload(session_id)["result"])
     return JSONResponse(body, status_code=201 if outcome.outcome == "applied" else 200)
+
+
+@app.post("/api/sessions/{session_id}/archive")
+def api_archive_session(session_id: int):
+    try:
+        outcome = service.archive_session(_db(), session_id)
+    except service.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except service.ArchiveIntegrityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    body = {
+        "outcome": outcome.outcome,
+        "archive": _archive_payload(outcome.archive),
+    }
+    body.update(_session_payload(session_id)["result"])
+    return JSONResponse(body, status_code=200)

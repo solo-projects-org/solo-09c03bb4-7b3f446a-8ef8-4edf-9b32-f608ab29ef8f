@@ -163,3 +163,8 @@ a { color: var(--accent); }
 .metric-value { font-size: 1.5rem; font-weight: 700; }
 
 .explain { margin: 0.4rem 0 0; }
+
+details.detail { margin-top: 0.85rem; }
+details.detail summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
+details.detail table { margin-top: 0.5rem; }
+button:disabled { background: #9aa8a0; cursor: not-allowed; }

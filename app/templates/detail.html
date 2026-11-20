@@ -51,8 +51,9 @@
     <h2>补录抽查凭证</h2>
     <p class="hint">
       按凭证号补录该批乘客的入队分钟、登车分钟和人数；各凭证对应不同乘客，
-      人数会从闸机总数中核销。新凭证与已采信凭证共同重算；同一凭证号内容相同只计一次，
-      内容不同报冲突。只有整场仍能配齐时才会同时保存凭证和重算结果。
+      人数会从闸机总数中核销。新凭证与已采信凭证（含历次归档汇总）共同重算；
+      同一凭证号内容相同只计一次，内容不同报冲突。只有整场仍能配齐时才会同时
+      保存凭证和重算结果。
     </p>
     <form method="post" action="/sessions/{{ session.id }}/credentials" class="inline-form">
       <label>凭证号 <input type="text" name="credential_no" maxlength="100" required></label>
@@ -62,28 +63,80 @@
       <button type="submit">提交凭证并重算</button>
     </form>
 
-    {% if credentials %}
+    {% if archive_info.archived %}
+    <p class="flash ok">
+      本场已于 {{ archive_info.archived_at }} 归档：{{ archive_info.credential_count }} 张凭证
+      （{{ archive_info.passenger_count }} 人）已转为核销依据，明文凭证号已清除。
+      归档不改变核销人数和超时结论；此后补证会连同历次归档汇总一起重算。
+    </p>
+    {% endif %}
+
+    {% if credential_summary %}
     <table class="list">
       <thead>
-        <tr><th>凭证号</th><th>入队分钟</th><th>登车分钟</th><th>等待</th><th>人数</th><th>是否超时</th></tr>
+        <tr><th>入队分钟</th><th>登车分钟</th><th>等待</th><th>人数</th><th>是否超时</th><th>来源</th></tr>
       </thead>
       <tbody>
-      {% for c in credentials %}
+      {% for s in credential_summary %}
         <tr>
-          <td>{{ c.credential_no }}</td>
-          <td>{{ c.join_minute }}</td>
-          <td>{{ c.board_minute }}</td>
-          <td>{{ c.wait_minutes }} 分钟</td>
-          <td>{{ c.count }}</td>
-          <td>{% if c.is_overdue(session.threshold) %}超时{% else %}未超时{% endif %}</td>
+          <td>{{ s.join_minute }}</td>
+          <td>{{ s.board_minute }}</td>
+          <td>{{ s.wait_minutes }} 分钟</td>
+          <td>{{ s.count }}</td>
+          <td>{% if s.is_overdue(session.threshold) %}超时{% else %}未超时{% endif %}</td>
+          <td>{% if s.archived %}核销依据（已归档）{% else %}在库凭证{% endif %}</td>
         </tr>
       {% endfor %}
       </tbody>
     </table>
-    <p class="hint">已采信 {{ credentials|length }} 个凭证，覆盖 {{ credential_passengers }} 人，其中确定超时 {{ overdue_credentials }} 人。</p>
+    <p class="hint">
+      按入队与登车分钟组合汇总：覆盖 {{ credential_passengers }} 人，其中确定超时
+      {{ overdue_credentials }} 人。{% if not archive_info.archived %}归档后本表由核销依据汇总替代逐张明细。{% endif %}
+    </p>
     {% else %}
       <p class="hint">暂无已采信凭证。</p>
     {% endif %}
+    {% if credentials and not archive_info.archived %}
+    <details class="detail">
+      <summary>在库凭证明细（归档后由上方汇总替代）</summary>
+      <table class="list">
+        <thead>
+          <tr><th>凭证号</th><th>入队分钟</th><th>登车分钟</th><th>等待</th><th>人数</th><th>是否超时</th></tr>
+        </thead>
+        <tbody>
+        {% for c in credentials %}
+          <tr>
+            <td>{{ c.credential_no }}</td>
+            <td>{{ c.join_minute }}</td>
+            <td>{{ c.board_minute }}</td>
+            <td>{{ c.wait_minutes }} 分钟</td>
+            <td>{{ c.count }}</td>
+            <td>{% if c.is_overdue(session.threshold) %}超时{% else %}未超时{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </details>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>归档</h2>
+    <p class="hint">
+      复核期结束后可归档本场：把已采信凭证按入队/登车分钟汇总为核销依据，删除业务库里的
+      明文凭证原号；网页与查询 API 只显示汇总。归档不改变核销人数与超时结论，失败时原
+      凭证仍可查。
+    </p>
+    <form method="post" action="/sessions/{{ session.id }}/archive" class="inline-form">
+      <button type="submit" {% if archive_info.archived and not credentials %}disabled{% endif %}>
+        {% if archive_info.archived %}归档新增凭证{% else %}归档本场{% endif %}
+      </button>
+      {% if archive_info.archived and not credentials %}
+        <span class="hint">本场已归档，当前没有待归档凭证。</span>
+      {% elif not credentials %}
+        <span class="hint">本场没有在库凭证，可直接归档并登记归档时间。</span>
+      {% endif %}
+    </form>
   </section>
 
   <section class="card">
